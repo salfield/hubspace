@@ -264,6 +264,7 @@ def create_su():
                              level = 'director')
 
     su_usr = model.User(user_name=turbogears.config.config.configs['syncer']['hubspaceadminuid'],
+                        username=turbogears.config.config.configs['syncer']['hubspaceadminuid'],
                       display_name='Hubspace App Admin',
                       password=turbogears.config.config.configs['syncer']['hubspaceadminpass'],
                       email_address="world.tech.space@the-hub.net",
