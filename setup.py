@@ -43,7 +43,7 @@ setup(name='hubspace',
            "vobject",
 	   "pisa",
 	   "reportlab",
-	   "psycopg2"
+	   "psycopg2",
            "python-ldap",
            "psycopg2",
            "pisa",
