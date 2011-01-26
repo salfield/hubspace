@@ -21,7 +21,7 @@ setup(name='hubspace',
       include_package_data=True,
       zip_safe=False,
       install_requires=[
-           "TurboGears == 1.0.7",
+           #"TurboGears == 1.1.1",
            "SQLObject == 0.10.2",
            "formencode >= 0.7.1",
            "smbpasswd",
@@ -44,6 +44,10 @@ setup(name='hubspace',
 	   "pisa",
 	   "reportlab",
 	   "psycopg2"
+           "python-ldap",
+           "psycopg2",
+           "pisa",
+           "reportlab",  
       ],
       entry_points="""
 [console_scripts]
