@@ -122,7 +122,11 @@ class ProfileCache(ObjectCache):
 class ProfileCacheContainer(ObjectCacheContainer):
     objectcache_factory = ProfileCache
     def populate(self):
-        if not self.location == 'global':
+        # clear the existing cache
+        for x in range(0, len(self)):
+            self.pop()
+
+        if self.location != 'global':
             location = Location.get(self.location)
             if location.is_region:
                 hubs = location.has_hubs
@@ -165,6 +169,12 @@ class Cache(dict):
         location_cache = LocationCache(key)
         self[key] = location_cache
         return location_cache
+
+
+# These functions are dangerous, because the add things directly to the cache based on fulfilment of conditions. Whilst the cache has a populate function which attemts to do the same. Therefore there are duplicate conditions for cache membership, and I've seem quite a few, inconsistent such conditions.
+# for now reverting to re-populating on user updates. Also there are global (not Hub specific) feeds which have been neglected in this implementation
+
+# Further the various functions which update properties of the cache, break the ordering of the cached items in various ways
     
 def on_add_rusage(kwargs, post_funcs):
     rusage = kwargs['class'].get(kwargs['id'])
@@ -181,9 +191,10 @@ def on_del_rusage(rusage, post_funcs):
 
 def on_add_user(kwargs, post_funcs):
     user = kwargs['class'].get(kwargs['id'])
-    if user.public_field:
-        location = user.homeplaceID
-        cached_updates[location]['profiles'].add(user)
+    cached_updates[location]['profiles'].populate()
+    #if user.public_field:
+    #    location = user.homeplaceID
+     #   cached_updates[location]['profiles'].add(user)
 
 def on_updt_rusage(instance, kwargs):
     applogger.info("feeds.on_updt_rusage: updating %s" % instance.id)
@@ -192,17 +203,21 @@ def on_updt_rusage(instance, kwargs):
     if instance_cache:
         instance_cache.update(kwargs)
     else:
-        if kwargs.get('public_field', False):
+        if kwargs.get('public_field', True):
             cached_updates[location]['events'].add(instance)
             applogger.info("feeds.on_add_rusage: added %s" % instance.id)
 
 def on_updt_user(instance, kwargs):
     applogger.info("feeds.on_updt_user: updating %s" % instance.id)
     location = instance.homeplaceID
-    instance_cache = cached_updates[location]['profiles'].get(instance.id)
-    if instance_cache:
-        instance_cache.update(kwargs)
-    cached_updates[location]['profiles'].sort()
+    #instance_cache = cached_updates[location]['profiles'].get(instance.id)
+    #if instance_cache:
+    #    instance_cache.update(kwargs)
+    #else:
+    #    if kwargs.get('public_field', True):
+    #        cached_updates[location]['profiles'].add(instance)
+    cached_updates[location]['profiles'].populate()
+    #cached_updates[location]['profiles'].sort()
 
 cache_factories = dict (events=EventCacheContainer, profiles=ProfileCacheContainer)
 cached_updates = Cache()
