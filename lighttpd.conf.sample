@@ -1,0 +1,59 @@
+##################
+# General stuff
+#server.chroot              = "/"
+server.username             = "www-data"
+server.groupname            = "www-data"
+server.pid-file             = "/var/run/lighttpd.pid"
+
+#server.bind                = "localhost"
+server.port                 = 80
+#server.name                = httpd.volga.the-hub.net
+
+
+##################
+# Modules
+server.modules              = ( "mod_access", "mod_alias", "mod_accesslog", "mod_rewrite", 
+                                "mod_redirect", "mod_proxy" )
+                              # "mod_fastcgi", "mod_auth",
+# include_shell             "/usr/share/lighttpd/include-conf-enabled.pl"
+proxy.balance               = "hash"
+
+
+##################
+# Mass vhosting
+server.document-root        = "/home/salfield/hubplus/hubspace/hubspace/hubspace/"
+index-file.names            = ( "index.php", "index.html" ) 
+
+
+##################
+# Error handling
+#debug.dump-unknown-headers = "enable"
+server.errorlog             = "/var/log/lighttpd/error.log"
+accesslog.filename          = "/var/log/lighttpd/access.log"
+
+#server.error-handler-404   = "/error-handler.html"
+#server.error-handler-404   = "/error-handler.php"
+#server.errorfile-prefix    = "/var/www/"
+
+
+##################
+# Diversae
+#mimetype.use-xattr         = "enable"
+include_shell               "/usr/share/lighttpd/create-mime.assign.pl"
+
+dir-listing.encoding        = "utf-8"
+server.dir-listing          = "enable"
+url.access-deny             = ( "~", ".inc" )
+
+
+$HTTP["url"] !~ "^/static/" {
+    proxy.server        = ( "/" => ( ( "host" => "127.0.0.1", "port" => 8001 ) ) )
+}
+
+$HTTP["host"] =~ "^(localhost)$" {
+       url.rewrite-once = ( 
+            "^/public/(.*\.html|uploads/.*)$" => "/static/localhost/$1",
+            "^/public/(.*)$" => "/sites/localhost/$1",
+            "^/admin/(.*)$" => "/sites/localhost/$1" 
+       )
+}
