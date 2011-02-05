@@ -55,26 +55,34 @@ def bs_preprocess(html):
      return html 
 
 def html2xhtml(value):
-    value = value.strip()
-    value = BeautifulSoup(value).prettify()
+    """Make sure we only save reasonably nice HTML
+    """
+    value = value.strip() 
+    value = BeautifulSoup(value).prettify() #tidies it and makes sure it is well-formed xhtml (usually).
     value = bs_preprocess(value)
     try:
-        XML(value).expand()
+        XML(value).expand() #make sure kid is gonna be able to render this. If not, don't save it.
     except:
         cherrypy.response.headers['X-JSON'] = 'error'
         print "not good XML"
     return value
 
+
 def get_profiles(*args, **kwargs):
+    """called by the 'members' PageType, to get the profiles to be published. Return value is of the form {"profiles":profiles, "user":user}
+    """
     location = kwargs.get('location')
     no_of_images = 9
     only_with_images = True
     profiles = get_local_profiles(location, only_with_images, no_of_images)
+    #if we are looking at a particular user "members/username", we need to add {"user":user_obj} such that we can render info about that user
     if len(args) >=1:
         profiles.update(get_user(*args))
     return profiles
 
 def get_user(*args, **kwargs):
+    """get a user by the username in the url
+    """
     if len(args) >= 1:
         user = User.by_user_name(args[0])
         if user.public_field and user.active:
@@ -82,6 +90,8 @@ def get_user(*args, **kwargs):
     return {}
 
 def get_public_place(*args, **kwargs):
+    """PublicPlace's are the Hubs that appear on the map on the main website. When we look at /places/{hub_name} the we see info about that Hub, using the arg passed for hub_name, we ensure that the required object is available. If we are looking at /places.html no args are passed because we are looking at the main map view.
+    """
     if len(args) >= 1:
         place = PublicPlace.select(AND(PublicPlace.q.name==args[0]))
         if place.count():
@@ -90,6 +100,8 @@ def get_public_place(*args, **kwargs):
     
 
 def get_events(*args, **kwargs):
+    """Get the events from the cache to be rendered by the "events" PageType. If an arg is passed for a particular event id, we return that event too. Return value looks like {'past_events':[RUsages], 'future_events':[Rusages], 'event':RUsage}
+    """
     no_of_events = 5
     location = kwargs.get('location')
     events = get_local_future_events(location, no_of_events)
@@ -98,7 +110,18 @@ def get_events(*args, **kwargs):
         events.update(get_event(*args))
     return events
 
+def get_event(*args):
+    """get the event for the event id passed as an arg
+    """
+    return {'event': RUsage.get(args[0])}
+
+
+
+
 def parseSubpageId(list_name):
+    """From what I see this isn't used anymore!
+    When we have sub-navigation, we address the sub_page as "/parentList__childPage". parentList will be the same as the name of the parent page.
+    """
     if list_name.startswith('subpage'):
         list_name,pageid=list_name.split('_')
     else:
@@ -106,14 +129,15 @@ def parseSubpageId(list_name):
     return (list_name,pageid)        
 
 
-
-standard_kw = ['microsite', 'page', 'location']
-
 class RedirectToClient(Exception):
+    """exception to be raised in HTTPRedirectClient
+    """
     def __init__(self, url):
         self.url = url
 
 class HTTPRedirectClient(HTTPRedirectHandler):
+    """Used in get_blog to construct a urllib2 "opener" which can handle redirects when proxying request to wordpress. i.e. is wordpress responds with a redirect, then we must redirect the client too.
+    """
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         m = req.get_method()
         if (code in (301, 302, 303, 307) and m in ("GET", "HEAD")
@@ -133,19 +157,36 @@ class HTTPRedirectClient(HTTPRedirectHandler):
         else:
             raise HTTPError(req.get_full_url(), code, msg, headers, fp)
 
-forwarded_request_headers = ['If-None-Match']
+# which headers should be forwarded on to wordpress from the client and back to the client from wordpress?
+forwarded_request_headers = ['If-None-Match'] 
 forwarded_response_headers = ['Etag', 'Last-Modified', 'X-Pingback', 'Cache-Control', 'Pragma', 'Expires']
 
 class MediaContent(Exception):
+    """Raised when the blog returns something that isn't html/xhtml. Its caught by the Microsite.default function, which then proxies the response's content_type and content_length Headers back to the client.
+    """
     def __init__(self, response):
         self.response = response
 
 class AjaxContent(Exception):
+    """NOT USED, except in blog2. The idea however is that we don't need to do our BeautifulSoup transformations on ajax content from wordpress
+    """
     def __init__(self, html):
         self.html = html
 
 
+standard_kw = ['microsite', 'page', 'location']
+
+
+def iswpadminurl(url):
+    if 'wp-admin'  in url or 'wp-login' in url:
+        return True
+    else: 
+        return False
+
 def get_blog(*args, **kwargs):
+    """Get the blog, proxying requests to the wordpress instance. Each cherrypy session gets a session cookie with wordpress. Wordpress redirects are modified and  returned to the client. Links in the wordpress html are re-written to microsite urls. 
+    """
+    #construct the wordpress url to call
     blog_url = kwargs['page'].blog_url.strip()
     args = list(args)
     args.insert(0, blog_url)
@@ -153,31 +194,40 @@ def get_blog(*args, **kwargs):
     url += '/'
     kw_args = dict((key.replace('+', '-'), val) for key, val in kwargs.iteritems() if key not in standard_kw)
     post_data = None
+    #use the kwards differently for GET and POST
     if kw_args:
         if cherrypy.request.method == 'GET':
             url += '?' + urlencode(kw_args)
         if cherrypy.request.method == 'POST':
             post_data = urlencode(kw_args)
    
+    #get or set_and_get the wordpress cookie associated with this session  
     if cherrypy.session.has_key('cj'):
         cj = cherrypy.session['cj']
     else:
         cj = cherrypy.session['cj'] = cookielib.CookieJar() 
 
+    #create a url opener that can hold cookies and deal with redirects
     opener = build_opener(HTTPCookieProcessor(cj), HTTPRedirectClient)
-    install_opener(opener)   
+    install_opener(opener)
+
+    #forward selected headers from the request to wordpress
     headers = {}
     for header in forwarded_request_headers:
         if cherrypy.request.headers.get(header, 0):
             headers[header] = cherrypy.request.headers[header]
+
+    #send the request
     try:
         if post_data:
             blog = Request(url, post_data, headers)
         else:
             blog = Request(url, headers=headers)
         blog_handle = urlopen(blog)
+    #if wordpress redirects, we redirect the client
     except RedirectToClient, e:
         redirect(e.url.replace(blog_url, cherrypy.request.base + '/public/' + kwargs['page'].path_name))
+    #houston we have a problem
     except IOError, e:
         if hasattr(e, 'reason'):
             blog_body = "Could not get blog from: " +  url + " because " + e.reason
@@ -192,12 +242,15 @@ def get_blog(*args, **kwargs):
         return {'blog': blog_body, 'blog_head': blog_head}
 
     else:
+        # no exceptions? okay lets see what wordpress gave us 
         content_type = blog_handle.headers.type
+
+        # this looks wrong to me...if it isn't html, redirect to yourself? could create ongoing redirect loop?
         if content_type not in ['text/html', 'text/xhtml']:
             raise redirect(url)
         blog = blog_handle.read()
 
-        #replace any links to the blog_url current address
+        #replace any links to the blog_url current address with microsite links
         our_url = cherrypy.request.base + '/public/' + kwargs['page'].path_name
         blog = blog.replace(blog_url, our_url)
         
@@ -206,7 +259,7 @@ def get_blog(*args, **kwargs):
         for input in blog.body.findAll('input', attrs={'name':re.compile('.*\-.*')}):
             input['name'] = input['name'].replace('-', '+') #hack around the awkwardness of submitting names with '-' from FormEncode
 
-        #change back anything ending in .js .css .png .gif, .jpg .swf
+        #change back any link ending in .js .css .png .gif, .jpg .swf such that these are served directly by wordpress
         for link in blog.findAll('link', attrs={'href':re.compile('.*' + re.escape(our_url) + '.*')}):
             link['href'] = link['href'].replace(our_url, blog_url)
         for link in blog.findAll('img', attrs={'src':re.compile('.*' + re.escape(our_url) + '.*')}):
@@ -214,13 +267,17 @@ def get_blog(*args, **kwargs):
         for link in blog.findAll('script', attrs={'src':re.compile('.*' + re.escape(our_url) + '.*')}):
             link['src'] = link['src'].replace(our_url, blog_url)
 
+        #remove some stuff that we don't want to send to the client
 	for header in blog.body.findAll('div', attrs={'id':'header'}):
 	     header.extract()
         for css in blog.head.findAll('link', attrs={'href':re.compile('.*standalone\.css')}):
              css.extract()
+
+        # render our modified soup for <head> and <body>
         blog_head = blog.head.renderContents()
         blog_body = blog.body.renderContents()
 
+        # proxy certain wordpress response headers back to the client
         for header in forwarded_response_headers:
             if blog_handle.headers.get(header, 0):
                 cherrypy.response.headers[header] = blog_handle.headers[header]
@@ -229,10 +286,9 @@ def get_blog(*args, **kwargs):
     return {'blog': blog_body, 'blog_head': blog_head}
 
 
-
-
-
 def get_blog2(*args, **kwargs):
+    """blog2 page type doesn't work and should be removed.
+    """
     #import pdb; pdb.set_trace()
     thispage = kwargs['page']
     blog_url = thispage.blog_url.strip()
@@ -361,6 +417,8 @@ def get_blog2(*args, **kwargs):
 
 
 def sitesearch(*args,**kwargs):
+        """Search page type doesn't work and should be removed
+        """
         #title, description, url
         s = str(kwargs.get('s',''))
         s = s.lower().strip()
@@ -404,21 +462,18 @@ def sitesearch(*args,**kwargs):
  
 
 
-def iswpadminurl(url):
-    if 'wp-admin'  in url or 'wp-login' in url:
-        return True
-    else: 
-        return False
 
-def get_event(*args):
-    return {'event': RUsage.get(args[0])}
 
 def experience_slideshow(*args, **kwargs):
+    """called by the experience page, returns a list of image urls from active pages - to be rendered in a slideshow on the page.
+    """
     return {'image_source_list': [top_image_src(page, kwargs['microsite']) for page in Page.select(AND(Page.q.locationID == kwargs['location'],
                                                                                                        Page.q.image != None)) if page.active]}
 
 
 def image_source(image_name, microsite, default=""):
+    """don't know where this is used! nowhere?
+    """
     try:
         os.stat(microsite.upload_dir + image_name)
         return microsite.upload_url + image_name
@@ -426,6 +481,8 @@ def image_source(image_name, microsite, default=""):
         return default
 
 def top_image_src(page, microsite):
+    """try and return the url of the image associated with a page, if you can't find an uploaded one, have a look in the default images, otherwise just give us the standard index.jpg image
+    """
     if page.image_name:
         return microsite.upload_url + page.image_name 
     else:
@@ -436,16 +493,20 @@ def top_image_src(page, microsite):
             return '/static/images/micro/main-images/index.jpg'
 
 def page_image_source(page_name, **kwargs):
+    """don't know where this is used! nowhere?
+    """
     return image_source(page_name + '.png', kwargs['microsite'], "/static/images/micro/main-images/" + page_name + '.jpg')
 
 def standard_page(*args, **kwargs):
+    """A func that returns an empty dict...pointless
+    """
     return {}
 
 valid_username_chars = r"[^0-9a-z._-]"
 valid_phone_chars = r"[^0-9/.\(\)\+-]"
 
 def create_inactive_user_host_email(**kwargs):
-    """send a mail to the hosts with a link to create the user
+    """send a mail to the hosts with a link to create the user - link has been reported to be broken recently
     """
     location = Location.get(kwargs['location'])
     if not kwargs.get('user_name', None):
@@ -500,7 +561,9 @@ def create_inactive_user_host_email(**kwargs):
     return attributes
 
 
-def create_enquiry(*args, **kwargs):    
+def create_enquiry(*args, **kwargs):
+    """returns arguments when the joinConfirm page is visited (when enquiry for is submitted). Really here to send the email.
+    """
     create_inactive_user_host_email(**kwargs)
     return {'first_name':kwargs['first_name'],
             'last_name': kwargs['last_name'],
@@ -509,9 +572,11 @@ def create_enquiry(*args, **kwargs):
             'email_address': kwargs['email_address'],
             'submit': True}
     
-
+# some variables we pass into all templates 
 site_template_args = {'tg_css':[], 'tg_js_head':[], 'tg_js_bodytop':[], 'tg_js_bodybottom':[]}
 
+# types of list. takes the form {'$type_name':{'object_types':[allowed types], 'mode':add_new or add_existing}
+# lists can allow multiple types of objects. 'add_new' mode means that we add to this list by creating new objects (e.g. when we add a new page to the navigation), 'add_existing' mode means that we add existing objects to a list without creating them (e.g. a list of users)
 list_types = {'spaces_list': {'object_types':['PublicSpace'], 'mode':'add_new'}, 
               'left_tabs': {'object_types':['Page'], 'mode':'add_new'}, 
               'right_tabs': {'object_types':['Page'], 'mode':'add_new'}, 
@@ -524,6 +589,8 @@ list_types = {'spaces_list': {'object_types':['PublicSpace'], 'mode':'add_new'},
 
 
 def getList(list_name,location):
+    """Get a list by its name and Location. List names should be unique within their location.
+    """
     #list_name,pageid = parseSubpageId(list_name)
     #if pageid:
     #    lists = List.selectBy(list_name=list_name,location=location,page=pageid)
@@ -536,6 +603,8 @@ def getList(list_name,location):
         return None
 
 def last_item(list_name, location):
+    """get the last item in a list by the name of the list
+    """
     thelist = getList(list_name,location)
     if thelist:
         try:
@@ -554,6 +623,8 @@ def last_item(list_name, location):
 #        return None 
 
 def append_existing_item(list_name, obj, **kwargs):
+    """Append an existing object to a list. Since lists can contain multiple types of objects we use ObjectReferences to refer to objects in  a list (to make generic lists).
+    """
     #import pdb; pdb.set_trace()
     thelist = getList(list_name,kwargs['location'])
     old_last = last_item(list_name, kwargs['location'])
@@ -564,11 +635,15 @@ def append_existing_item(list_name, obj, **kwargs):
         old_last.next = new_last
 
 def append_to_list(list_name, **kwargs):
+    """Create a list item and append it to a list.
+    """
     #we could be adding to a subpages list. If foo.html gets a bar subpage, 
     #the name needs to be foo__bar.html
     #import pdb; pdb.set_trace()
     
     if kwargs['object_type'] == Page.__name__:
+        # if its a Page then we need to pass a "page_type" to the constructor
+        # we use a naming convention for subpages, so we do special stuff if the list_name starts with 'subpages_' ... nasty
         path_name = kwargs['name']
         subpage_of=None
         if list_name.startswith('subpages_'):
@@ -583,22 +658,28 @@ def append_to_list(list_name, **kwargs):
     else:
         object_type = getattr(model, kwargs['object_type'])
         new_obj = object_type(**{'name': kwargs['name']})
+
+    # then we act as if the object always existed :-)
     return append_existing_item(list_name, new_obj, **kwargs)
 
 class PageType(object):
+    """This is the class used to define different types of Page!!!
+    """
     def __init__(self, name, template, view_func=None, can_be_tab=True, static=True, default_vals=None):
         self.name = name
         self.template = template 
-        self.view_func = view_func
-        self.can_be_tab = can_be_tab
-        self.static = static
-        self.defaults_vals = default_vals
+        self.view_func = view_func # this is the function that constructs the template arguments based on the args and kwargs passed in the request
+        self.can_be_tab = can_be_tab # some page types just shouldn't be tabs
+        self.static = static # should this type it be rendered as a .html page and served from lighttpd?
+        self.defaults_vals = default_vals # default values to instantiate this Page Type with
         if default_vals:
             self.default_vals = default_vals
         else:
             self.default_vals = {}
  
     def create_page(self, page_name, location, initial_vals=None,path_name=None,subpage_of=None):
+        """umm, it creates pages! 
+        """
         #import pdb; pdb.set_trace()
         if not path_name:
             path_name=page_name
@@ -606,6 +687,7 @@ class PageType(object):
         if self.static:
             path_name = path_name + '.html'
         
+        # override the default values for the page with explicitly defined values
         attr_vals = dict(**self.default_vals)
         if initial_vals:
             attr_vals.update(initial_vals)
@@ -614,27 +696,31 @@ class PageType(object):
                        'name': page_name,
                        'path_name': path_name,
                        'location': location})
-        #pages can have subpages
+        #create a subpages list so we can add subpages to our navigatin
         List(list_name='subpages_%s' % page.id,
              object_types='Page',
              mode='add_new',
              page=page,
              location=page.location)
-        page_wrapper = MetaWrapper(page)
         
         if subpage_of:
             attr_vals['subpage_of'] = subpage_of
 
+        # set the attr values on the page. If the Page doesn't have the attribute we are trying to set, then try and create it as a MetaData object. This allows us to set and get arbitrary persistent values to the Page.
+        page_wrapper = MetaWrapper(page)
         for attr, val in attr_vals.items():
             if not getattr(page_wrapper, attr):
                 setattr(page_wrapper, attr, val)
         return page
 
+
+
+#define a PageType by passing in: ('page type name', 'template name', 'function to prepare template args from request args and kwargs', 'render a static html page  or not', 'default values to be passed to the template', 'whether or not the page can be a tab')
 login_page_type = PageType('login', 'hubspace.templates.microSiteLogin', login_args, static=False, default_vals={'name':"member login", 'subtitle':"book spaces and find members "})
 request_password_type =  PageType('requestPassword', 'hubspace.templates.microSitePassword', requestPassword, static=False, can_be_tab=False)
 reset_password_type = PageType('resetPassword', 'hubspace.templates.microSitePassword', resetPassword, static=False, can_be_tab=False)
 
-# on starting the application, each type is added to the map
+# which page types are allowed on the website?
 website_page_types =  {
     'home': PageType('home', 'hubspace.templates.webSiteHome', default_vals={'name':"home"}),
     'people': PageType('people', 'hubspace.templates.webSitePeople', get_user, default_vals={'name':"people"}),
@@ -644,6 +730,7 @@ website_page_types =  {
     'requestPassword':request_password_type,
     'resetPassword':reset_password_type
 }
+# which pages are created by default on the website?
 website_pages = {
     'index':'home',
     'contact':'standard',
@@ -657,10 +744,11 @@ website_pages = {
     'requestPassword':'requestPassword',
     'resetPassword':'resetPassword'    
 }
+#which of these pages should appear in which navigation list and in what order?
 website_left_page_list = ['index', 'people', 'places', 'ideas', 'about', 'invitation'] #determines the order the pages appear in tabs which are autocreated
 website_right_page_list = ['contact']
 
-
+# which page types are allowed on the microsite?
 microsite_page_types =  {
     'home': PageType('home', 'hubspace.templates.microSiteHome', default_vals={'name':"King's Cross"}),
     'experience': PageType('experience', 'hubspace.templates.microSiteExperience', experience_slideshow, default_vals={'name':"experience", 'subtitle':"the hub at king's cross"}),
@@ -682,7 +770,7 @@ microsite_page_types =  {
     }
 
 
-#these are added to the database when a microsite is created
+# which pages are created by default on the website?
 microsite_pages = {
     'index': 'home',
     'experience': 'experience',
@@ -705,7 +793,7 @@ microsite_right_page_list = ['login', 'contact']
 
 
 def migrate_data():
-    """
+    """old and unnecessary
     """
     page_metadata_map = {'index':['sub_title', 'find_us_header', 'find_us', 'parking_header', 'parking', 'opening_hours', 'opening_hours_header', 'map_location'],
                          'experience': ['features_header', 'features_body'],
@@ -796,6 +884,8 @@ from hubspace.file_store import save_file
 
 
 class SiteList(controllers.Controller):
+    """A controller added below the controller for a particular site i.e. at /sites/islington_the_hub_net/lists/. This provides the methods that a called by the site to manipulate lists.
+    """
     def __init__(self, site):
         super(SiteList, self).__init__()
         self.site = site
@@ -803,7 +893,7 @@ class SiteList(controllers.Controller):
     def get_list(self, list_name, page=None):
         """This should return a list of objects which can be rendered by the appropriate templates
         e.g. in the case of spaces this should return a list of objects with the attributes 'name', 'description' and 'image'
-        e.g.2. in the case of the site tabs, this should return a list of site_page 'objects' with the relavant metadate fields as attributes
+        e.g.2. in the case of the site tabs, this should return a list of site_page 'objects' with the relavant metadata fields as attributes
         """
         #if page:
         #    lists = List.selectBy(location=self.site.location,list_name=list_name,page=page)
@@ -817,6 +907,8 @@ class SiteList(controllers.Controller):
 
     @expose(template='hubspace.templates.listEditor', fragment=True)
     def render_as_table(self, list_name):
+        """render the list in the generic list editing view.
+        """
         relative_path = relative_folder(self.site.site_url)
         #list_name,pageid = parseSubpageId(list_name)
         #import pdb; pdb.set_trace()
@@ -883,6 +975,8 @@ class SiteList(controllers.Controller):
         #    return None
 	    
     def iterator(self, list_name):
+        """walk the linked list
+        """
         current = self.first(list_name)
         if current:
             yield current
@@ -894,6 +988,8 @@ class SiteList(controllers.Controller):
     @expose()
     @validate(validators={'list_name':v.UnicodeString(), 'object_type':v.UnicodeString(), 'object_id':v.Int(), 'active':v.Int(if_empty=0),'pageid':v.Int(if_missing=1)})
     def append_existing(self, list_name, **kwargs):
+        """Append an already existing object to the list, and re-render the list
+        """
         #import pdb; pdb.set_trace()
         if not is_host(identity.current.user, Location.get(self.site.location)):
             raise IdentityFailure('what about not hacking the system')
@@ -909,6 +1005,8 @@ class SiteList(controllers.Controller):
     @expose()
     @validate(validators={'list_name':v.UnicodeString(), 'object_type':v.UnicodeString(), 'page_type':v.UnicodeString(), 'name':v.UnicodeString(), 'active':v.Int(if_empty=0),'pageid':v.Int(if_missing=1)})
     def append(self, list_name, **kwargs):
+        """Append a new object to the list, while creating it.
+        """
         if not is_host(identity.current.user, Location.get(self.site.location)):
             raise IdentityFailure('what about not hacking the system')
         kwargs['location'] = self.site.location
@@ -925,7 +1023,7 @@ class SiteList(controllers.Controller):
         self._remove(list_name,item_id)
         return self.render_as_table(list_name)           
 
-    def _remove(self,list_name,item_id): #XXX is this secured against web attacks?
+    def _remove(self, list_name, item_id):
         item = ListItem.get(item_id)
         if item.previous:
             if item.next:
@@ -946,6 +1044,8 @@ class SiteList(controllers.Controller):
     @expose()
     @validate(validators={'list_name':v.UnicodeString(), 'item_id':v.Int(if_empty=None)})
     def remove_existing(self, list_name, item_id):
+        """Here we destroy the ListItem but we do not want to destory the item itself e.g. User
+        """
         if not is_host(identity.current.user, Location.get(self.site.location)):
             raise IdentityFailure('what about not hacking the system')
         item = ListItem.get(item_id)
@@ -961,6 +1061,8 @@ class SiteList(controllers.Controller):
     @expose()
     @validate(validators={'list_name':v.UnicodeString(), 'object_id':v.UnicodeString(), 'active':v.Int(if_empty=0)})
     def toggle_active(self, list_name, object_id,  active=0):
+        """activate or deactivate the page. If deactivated it will not appear in navigation lists (depending on template used).
+        """
         if not is_host(identity.current.user, Location.get(self.site.location)):
             raise IdentityFailure('what about not hacking the system')
         item = ListItem.get(object_id)
@@ -968,18 +1070,24 @@ class SiteList(controllers.Controller):
         return self.render_as_table(list_name)
 
 class MicroSiteEdit(controllers.Controller):
+    """A controller added below the controller for a particular site i.e. at /sites/islington_the_hub_net/edit/. This provides the methods that are called when the user edits the site using ajax calls.
+    """
     def __init__(self, site):
         super(MicroSiteEdit, self).__init__()
         self.site = site
 
     @expose(template='hubspace.templates.uploadImage')
     def uploadImageIframe(self, id, type, attr, height=0, width=0, page_name=""):
+        """create an iframe, so we can upload images without refreshing the page
+        """
         return {'id':id, 'type':type, 'attr':attr, 'relative_path':'../../../../' + relative_folder(self.site.site_url)+'edit/', 'height': height, 'width': width, 'page_name':page_name}
 
 
     @expose()
     @validate(validators={'object_id':real_int, 'object_type':v.UnicodeString(), 'property':v.UnicodeString(), 'height':v.Int(), 'width': v.Int(), 'page_name':v.UnicodeString()})
     def uploadImage(self, object_id, object_type, property, image, height=None, width=None, page_name='index.html', tg_errors=None):
+        """Upload an image to an arbitrary property/MetaData of an arbitrary object. Resize the image and re-render the page's html along the way.
+        """
         # for some very strange reason height and width come through as unicode
         if tg_errors:
             for tg_error in tg_errors:
@@ -1006,6 +1114,8 @@ class MicroSiteEdit(controllers.Controller):
     @expose()
     @validate(validators={'user_name':username, 'first_name':no_ws_ne_cp, 'last_name':no_ws_ne_cp, 'email_address':email_address, 'organisation':no_ws, 'home':phone})
     def create_inactive_user(self, tg_errors=None, user_name=None, first_name=None, last_name=None, email_address=None, organisation=None, home=None, hmac=''):
+        """This gets called when the host who receives the enquiry mail, clicks on the link in the mail to create a user. Reported as not working...not tested
+        """
         #check hmac
         hmac_key = config.get('hmac_key', None)
         if hmac_key:
@@ -1045,7 +1155,7 @@ class MicroSiteEdit(controllers.Controller):
     @expose()
     @validate(validators={'object_type':v.UnicodeString(), 'object_id':real_int, 'property':v.UnicodeString(), 'default':v.UnicodeString()})
     def attribute_load(self, object_type, object_id, property, default=''):
-        """load the attribute of any object type
+        """load the attribute (or metadata) of any object type
         """
         obj = obj_of_type(object_type, object_id)
         obj = MetaWrapper(obj)
@@ -1060,6 +1170,8 @@ class MicroSiteEdit(controllers.Controller):
     @identity.require(identity.not_anonymous())
     @validate(validators={'object_type':v.UnicodeString(), 'property':v.UnicodeString(), 'q':v.UnicodeString()})
     def auto_complete(self, object_type, property, q, timestamp, **kwargs):
+        """When we use a list in 'add_existing' mode, we need to find the objects to add them to the list. This does so through autocompleting a query 'q' wrt a property which is passed in by the request.
+        """
         q = '% '.join(q.split(' ')) + '%'
         type = getattr(model, object_type)
         magic_prop = getattr(type.q, property)
@@ -1077,7 +1189,7 @@ class MicroSiteEdit(controllers.Controller):
     @expose()
     @validate(validators={'object_type':v.UnicodeString(), 'object_id':real_int, 'property':v.UnicodeString(), 'value': v.UnicodeString(), 'page_name': v.UnicodeString()})
     def attribute_edit(self, object_type=None, object_id=None, property=None, value="", page_name="index.html", tg_errors=None):
-        """edit the attribute of any object type
+        """edit the attribute of any object type.  Edit it using the MetaWrapper, so that if the attribute doesn't exist we can add it as MetaData. 
         """
         if tg_errors:
             cherrypy.response.headers['X-JSON'] = 'error'
@@ -1085,22 +1197,25 @@ class MicroSiteEdit(controllers.Controller):
                 error = `tg_error` + " " + str(tg_errors[tg_error])
             return error
 
-        page_name = page_name.split('#')[0]
+        page_name = page_name.split('#')[0] #ignore any anchor in the page_name
         value = html2xhtml(value)
 
+        #get a metadata capable wrapper for any object for any object
         obj = obj_of_type(object_type, object_id)
-        obj = MetaWrapper(obj)
+        obj = MetaWrapper(obj) 
         if not is_host(identity.current.user, Location.get(self.site.location)):
             raise IdentityFailure('what about not hacking the system')
 
         if value != getattr(obj, property):
             setattr(obj, property, value)
-            self.site.attr_changed(property, page_name)
+            self.site.attr_changed(property, page_name) # trigger appropriate page regeneration
         cherrypy.response.headers['X-JSON'] = 'success'
         return value
 
 
 class MicroSite(controllers.Controller):
+    """The site controller. There is one of these per microsite. 
+    """
     def __init__(self, location, site_dir, site_url, static_url, site_types):
         super(MicroSite, self).__init__()
         self.location = location.id
@@ -1110,10 +1225,12 @@ class MicroSite(controllers.Controller):
         self.upload_dir = self.site_dir + '/uploads/'
         self.upload_url = self.static_url + '/uploads/'
         self.initialized = False
-        self.site_types = site_types
-        self.add_edit_controllers()
+        self.site_types = site_types # which types are allowed for this site
+        self.add_edit_controllers() # add the list and edit sub controllers
                        
     def _cpOnError(self):
+        """Catch uncaught errors and log them
+        """
         try:
             raise # http://www.cherrypy.org/wiki/ErrorsAndExceptions#a2.2
         #use this for getting 404s...
@@ -1164,8 +1281,12 @@ class MicroSite(controllers.Controller):
             cherrypy.response.body = try_render(d, template='hubspace.templates.issue', format='xhtml', headers={'content-type':'text/html'}, fragment=True)
 
     def attr_changed(self, property, page_name):
+        """If attribute values change, then we must re-render the appropriate pages
+        """
+        # if the name or subtitle of a page has changed, regenerate all the sites pages
         if property in ('name', 'subtitle'):
             self.regenerate_all()
+        # otherwise just re-render the page that changed
         elif self.site_types[Page.select(AND(Page.q.path_name == page_name,
                                              Page.q.locationID == self.location))[0].page_type].static:
             self.render_page(page_name)
@@ -1175,6 +1296,8 @@ class MicroSite(controllers.Controller):
         setattr(self, 'lists', SiteList(self))
     
     def regenerate_all(self):
+        """re-render all the pages for this location. This is called by regenerate_all in controllers.py, such that everything is regenerated for all locations. 
+        """
         for page in Page.select(AND(Page.q.location==self.location)):
             if self.site_types[page.page_type].static == True:
                 try:
@@ -1184,6 +1307,8 @@ class MicroSite(controllers.Controller):
                     applogger.exception("failed to render page with name " + page.name + ", location " + `self.location` + " and id " + `page.id`  )
 
     def construct_args(self, page_name, *args, **kwargs):
+        """When a page is rendered, construct the arguments that will be sent to the template
+        """
         template_args = dict(site_template_args)
         try:
             page = MetaWrapper(Page.select(AND(Page.q.location==self.location, Page.q.path_name==page_name))[0])
@@ -1195,6 +1320,7 @@ class MicroSite(controllers.Controller):
                 applogger.debug("debug info: args [%s] kwargs [%s]" % (str(args), str(kwargs)))
                 raise
 
+        # call the view function for this PageType with the args and kwargs passed from the request and a few supplementary kwargs.
         func = self.site_types[page.page_type].view_func
         if func:
              kwargs['location'] = self.location
@@ -1203,10 +1329,13 @@ class MicroSite(controllers.Controller):
              args_dict = func(*args, **kwargs)
         else:
              args_dict = {}
+
+        # tell the template "where" it is being rendered
         if kwargs.get('relative_path', None):
             template_args.update({'relative_path': kwargs['relative_path']}) 
         else:
             template_args.update({'relative_path': relative_folder(self.site_url)})
+        # add some globals that we want to be available in all page templates
         template_args.update({'static_files_path': self.upload_url})
         template_args.update({'lists': self.lists.iterator, 'upload_url': self.upload_url})
         template_args.update({'top_image_src': top_image_src(page, microsite=self)})
@@ -1218,6 +1347,8 @@ class MicroSite(controllers.Controller):
         return template_args
 
     def get_sidebar(self,location,page):
+        """Not used
+        """
         blogs = Page.selectBy(location=location,page_type='blog2').orderBy('id')
         if blogs.count() > 0:
             sidebarblog = blogs[0]
@@ -1226,18 +1357,12 @@ class MicroSite(controllers.Controller):
             out = dict(blog_head=parts['blog_head'],blog=parts['sidebartext'])
         else:
             out = dict(blog_head='',blog='')
-        return out
-
-
-    @expose()
-    def jhb(self, *args, **kwargs):
-        raise 'foo2'
-        return 'foo bar'
-
-        
+        return out        
   
     @expose()
     def icalfeed_ics(self,eventid=None,*args,**kwargs):
+        """Get an ICAL feed on events in the 'future events' cache
+        """
         #import pdb; pdb.set_trace()
         location = Location.get(self.location)
         if eventid:
@@ -1266,7 +1391,7 @@ class MicroSite(controllers.Controller):
 
     @expose()
     def default(self, *args, **kwargs):
-        """This needs securing a little bit
+        """All page requests go through here. This needs securing a little bit. 
         """
         if kwargs.get('tg_errors', None):
              return str(kwargs['tg_errors'])
@@ -1275,15 +1400,18 @@ class MicroSite(controllers.Controller):
              redirect(cherrypy.request.path + '/')
 
         if not args or args[0]=='':
-            path_name = configuration.site_index_page[Location.get(self.location).url]
+            #determine the index path
+            path_name = configuration.site_index_page[Location.get(self.location).url]  
         else:
             path_name = args[0]
             args = args[1:]
 
+        # on first request to this site after starting up regenerate all its pages
         if not self.initialized:
             self.regenerate_all()
             self.initialized = True
         try:
+            #try and render the page, unless the blog proxy tells us that this is a media file
             html =  self.render_page(path_name, *args, **kwargs)
             
             #page = Page.select(AND(Page.q.location==self.location, 
@@ -1294,6 +1422,7 @@ class MicroSite(controllers.Controller):
             return html
 
         except MediaContent, e:
+            # add wordpress response Content headers to our response to client
             cherrypy.response.headers['Content-Type'] = e.response.headers['Content-Type']
             cherrypy.response.headers['Content-Length'] = e.response.headers['Content-Length']
             return e.response.read()
@@ -1302,6 +1431,8 @@ class MicroSite(controllers.Controller):
 
     @expose()
     def blog_media_content(*args,**kwargs):
+        """Not to sure where this is used
+        """
         path_name = args[0]
         subpath = '/'.join(args[1:])
 
@@ -1316,6 +1447,8 @@ class MicroSite(controllers.Controller):
             subpath = subpath[:-1]
             
     def render_page(self, path_name, *args, **kwargs):
+        """
+        """
         #applogger.debug("render_page: request [%s %s %s]" % (path_name, str(args), str(kwargs)))
         path_name = path_name.split('#')[0]
         try:
@@ -1333,7 +1466,10 @@ class MicroSite(controllers.Controller):
            
         path = self.site_dir + '/' + page.path_name
 
+        # I guess we only need to do this first rendering if render_page is called by a request. If for example it is called by attr_changed or regenerate_all, this is unnecessary.
         out = try_render(template_args, template=template, format='xhtml', headers={'content-type':'text/xhtml'})
+
+        # if the page needs to be static, we need to render it again with the "render_static" function before saving! This is because when we are editing this we may be doing so in the admin mode and would render admin functions to static html. 
         if page and self.site_types[page.page_type].static and path_name.endswith('.html'):
             # same method serves for events.html and events/<event-id> so in case in case if URL path
             # does not end with .html we do not need to generate html page. Or we don't support that yet.
@@ -1344,25 +1480,37 @@ class MicroSite(controllers.Controller):
             new_html = open(path, 'w')
             new_html.write(public_html)
             new_html.close()
-    
+        #but we always return the version rendered without render_static
         return out
 
 class Sites(controllers.Controller):
+    """This is the sites object which links the microsites in cherrypy controllers tree. It is instantiated in the Root object in controllers.py.
+    """
     def __init__(self):
+        """When we startup, we want to make sure that the paths to each location are added to the tree below /sites. So we have /sites/location
+        """
         super(Sites, self).__init__()
         for loc in Location.select(AND(Location.q.url!=None)):
             self.add_site(loc)
 
     def add_site(self, loc):
-        """This should be called when first setting the url of location
+        """Each site is setup by this function. 
         """
         if not loc.url:
             return
+        #the site_path will end up looking like "islington_the_hub_net". This was done because you can't have . and _ in a cherrypy object path, and this path is a step down the cherrypy object tree
         site_path = loc.url.split('://')[1].replace('.', '_').replace('-', '_')
         static_dir = os.getcwd() + '/hubspace/static/'
         static_url = '/static/' + site_path
         site_dir = static_dir + site_path
         site_url = 'sites/' + site_path
+        #we now know what the site_url and sites directory for static files will be
+
+        #we now determine the default setup
+        # What types of page should be available? 
+        # What pages should exist? 
+        # Where they should appear in the navigation?
+        # We distinguish default setups for the central website and the microsites.
         if loc.url not in ["http://the-hub.net", "http://new.the-hub.net"]:
             site_types = microsite_page_types
             site_pages = microsite_pages
@@ -1373,29 +1521,39 @@ class Sites(controllers.Controller):
             site_pages = website_pages
             site_left_tabs = website_left_page_list
             site_right_tabs = website_right_page_list
-        #create the static directory if it doesn't exist
+
+        #create the static directory for this location if it doesn't exist, and put an uploads directory in it
         try:
             os.stat(site_dir)
         except OSError:
             os.mkdir(site_dir)
             os.mkdir(site_dir + '/uploads')
+
+        #does this location have any pages? If not lets create all the default pages for this site. And all the "Page Lists" (otherwise known as navigation bars)
         try:
             Page.select(AND(Page.q.location==loc))[0]
         except IndexError:
             index_pages = self.create_pages(loc, site_types, site_pages)
             self.create_page_lists(loc, site_left_tabs, site_right_tabs, index_pages[loc])
 
+        #finally lets instantiate a microsite instance with all the settings we have worked out. Lets make the site instance available at /sites/{site_path}
         setattr(self.__class__, site_path, MicroSite(loc, site_dir, site_url, static_url, site_types))
 
     def create_pages(self, loc, site_types, site_pages):
+        """create all the default pages for a location, by calling "create_page" on the PageType object corresponding to the "type" string in "site_pages".
+        """
         index_pages = {}
         for page, type in site_pages.items():
             p = site_types[type].create_page(page, loc, {})
+
+        #the rest of this func appears to be unnecessary
             if page == 'index':
                 index_pages[loc] = p
         return index_pages
 
     def create_page_lists(self, loc, left_tabs, right_tabs, index_page):
+        """Add one of each of the default lists in 'list_types'. Then add the various default pages to the left and right navigation lists
+        """
         for list_name, data in list_types.items():
             object_types = ','.join(data['object_types'])
             List(list_name=list_name,
@@ -1422,14 +1580,16 @@ class Sites(controllers.Controller):
                 pass
   
     def move_site(self, loc, new_url):
-        """this should be called on changing the url of a location
+        """this should be called on changing the url of a location. Since it isn't implemented. Changing urls, also requires moving the associated directory manually, otherwise the directory will be created without the old static files (on restart).
         """
 	pass
         
 
 def refresh_all_static_pages():
-    # Problems with this code 
-    # - If it is called from a scheduled job, at points it tries to use tg identity framework which is not possible outside http request
+    """This is executed on startup, and then every 4 hours by the scheduler. The idea is that if we haven't caught the need to regenerate pages through events and calls, that with a maximum 4 hour lag we should update it.
+    This obviously shares a lot of similarities with "regenerate_all". Only it can be called from a scheduled job. Should really be combined with it.
+    The things is, I hadn't realised this was executing every 4 hours. Over the last year the number of pages has grown massively, we are now talking many hundreds of pages to regenerate. It takes time and it seems to take rather a lot of CPU (from observation of starting up). Perhaps we should remove this, or schedule it much more rarely.  Or perhaps remove it altogether, and just call regenerate_all when there is a problem. It shouldn't be scheduled on startup as we regenerate all the pages of a site when it is first viewed after startup.
+    """
     sites = dict((site.location, site) for site in cherrypy.root.sites.__class__.__dict__.values() if isinstance(site, MicroSite))
     for page in Page.select():
         site = sites[page.locationID]
@@ -1445,7 +1605,9 @@ def refresh_all_static_pages():
                         applogger.exception("refresh_static_pages: failed to regenerate %s with error '%s'" % (path, err))
 
 
-def regenerate_page(location_id, page_type, check_mtime=False):
+def regenerate_page(location_id, page_type):
+    """Actually regenerates all the pages of a particular type for the location its called for. And only regenerates pages ending in .html - as these are the only ones that are are served statically from lighttpd.
+    """
     sites = (site for site in cherrypy.root.sites.__class__.__dict__.values() if isinstance(site, MicroSite))
     for site in sites:
         if site.location == location_id: break
@@ -1458,6 +1620,9 @@ def regenerate_page(location_id, page_type, check_mtime=False):
             if page.path_name.endswith('.html'):
                 applogger.debug("regenerating page: location_id [%s] path_name [%s]" % (location_id, page.path_name))
                 site.render_page(page.path_name, relative_path='./')
+
+
+#These functions all seem wrong here. They relate to regenerating "events" and "members" page when users and events are updated. However, we have no guarantee whether they will happen before or after the analagous events in feed.py which update the cache. Page regeneration should happen as and when the page changes. So I suggest moving these regenerate_page calls to the events functions in feeds.py.
 
 def on_add_rusage(kwargs, post_funcs):
     rusage = kwargs['class'].get(kwargs['id'])

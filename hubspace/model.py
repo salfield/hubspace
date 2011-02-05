@@ -440,7 +440,7 @@ class UserMetaData(SQLObject):
 
 
 class ObjectReference(SQLObject):
-    """Should delete itself when the Object no longer exists
+    """Object references are an indirection layer for uniquely referencing an object independently of its type and what table it appears in
     """
     object_type = UnicodeCol(default="")
     object_id = IntCol(default=0)
@@ -513,7 +513,7 @@ listen(delete_object_reference, Page, RowDestroySignal)
 #name, e.g. 'subpages' or 'spaces_list'
 
 class ListItem(SQLObject):
-    """This is used for managing UI navigation lists. We can have multiple lists per location, which are diffentiated by a 'list_name'. Each list begins with the item where previous=None, and can be traversed through next and previous references. ListItems can be active or not, and will be displayed or not accordingly by the gui. 
+    """This is used for managing UI navigation lists. We can have multiple lists per location, which are diffentiated by a 'list_name'. Each list begins with the item where previous=None, and can be traversed through next and previous references. ListItems can be active or not, and will be displayed or not accordingly to the gui. 
     """
     list_name = UnicodeCol() #to differentiate multiple lists in the location
     next = ForeignKey('ListItem', default=None)
@@ -541,7 +541,7 @@ class List(SQLObject):
 # show on each template the index.html lists    
 
 class PublicPlace(SQLObject):
-    """This should be referenced by a ListItem or a page
+    """This should be referenced by a ListItem via an ObjectReference. It is the object representing the Hubs on the map. The db stores (x,y) coordinates using MetaData on this object type. 
     """
     name = UnicodeCol(default="") #should be forced to be unique - this has to be reported as an error to the user
     description = UnicodeCol(default="")
@@ -557,7 +557,7 @@ listen(delete_object_reference, PublicPlace, RowDestroySignal)
     
 
 class PublicSpace(SQLObject):
-    """This should be referenced by a ListItem or a page
+    """"This should be referenced by a ListItem via an ObjectReference. It is the list of spaces in spaces.html
     """
     name = UnicodeCol(default="") #should be forced to be unique - this has to be reported as an error to the user
     description = UnicodeCol(default="")
@@ -593,7 +593,7 @@ class LocationMetaData(SQLObject):
     attr_value = UnicodeCol(default="")
 
 
-##Old
+##Old should be removed along with data
 class MicroSiteSpace(SQLObject):
     """Space objects which appear in the microsite
     """
